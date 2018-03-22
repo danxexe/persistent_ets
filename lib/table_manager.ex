@@ -86,7 +86,13 @@ defmodule PersistentEts.TableManager do
     Process.cancel_timer(state.timer)
     Process.link(pid)
     :ets.setopts(state.table, [{:heir, self(), :inherited}])
-    state = persist(%{state | timer: nil})
+
+    state = if state.persist_every == :never do
+      state
+    else
+      persist(%{state | timer: nil})
+    end
+
     :ets.give_away(state.table, pid, ref)
     {:noreply, state}
   end
@@ -123,7 +129,13 @@ defmodule PersistentEts.TableManager do
 
   def handle_info({:"ETS-TRANSFER", tab, pid, {ref, :return}}, %{table: tab} = state) do
     clean_unlink(pid)
-    state = persist(state)
+
+    state = if state.persist_every == :never do
+      state
+    else
+      persist(state)
+    end
+
     :ets.delete(tab)
     send(pid, ref)
     {:stop, :normal, %{state | table: nil}}
@@ -148,6 +160,8 @@ defmodule PersistentEts.TableManager do
   end
 
   defp build_state({:persist_every, period}, state) when is_integer(period),
+    do: %{state | persist_every: period}
+  defp build_state({:persist_every, period = :never}, state),
     do: %{state | persist_every: period}
   defp build_state({:persist_opts, opts}, state) when is_list(opts),
     do: %{state | persist_opts: opts}
@@ -177,9 +191,13 @@ defmodule PersistentEts.TableManager do
     if state.timer, do: Process.cancel_timer(state.timer)
     opts = Keyword.merge(state.persist_opts, extra)
     :ok = :ets.tab2file(state.table, state.path, opts)
-    ref = Process.send_after(self(), :persist, state.persist_every)
+    ref = persist_every(state.persist_every)
+
     %{state | timer: ref}
   end
+
+  defp persist_every(:never), do: nil
+  defp persist_every(delay), do: Process.send_after(self(), :persist, delay)
 
   defp open_table(mod, path, opts) do
     if File.regular?(path) do
